@@ -1,8 +1,7 @@
 #cloud-config
-# WireGuard VPN Server Setup
-# This cloud-init configuration will install and configure WireGuard VPN on your server
+# Simple WireGuard VPN Server with wgm Command Tool
+# Two access modes: Full internet or Localhost + Private networks
 
-# Update package list and install required packages
 package_update: true
 package_upgrade: true
 
@@ -12,10 +11,8 @@ packages:
   - iptables
   - ufw
   - curl
-  - wget
-  - git
+  - iproute2
 
-# Create system user for WireGuard management
 users:
   - name: wireguard
     system: true
@@ -23,7 +20,6 @@ users:
     groups: [sudo]
     sudo: ALL=(ALL) NOPASSWD:ALL
 
-# Write WireGuard configuration
 write_files:
   # WireGuard server configuration
   - path: /etc/wireguard/wg0.conf
@@ -31,37 +27,48 @@ write_files:
     owner: root:root
     content: |
       [Interface]
-      PrivateKey = SERVER_PRIVATE_KEY_PLACEHOLDER
       Address = 10.0.0.1/24
       ListenPort = 51820
       SaveConfig = true
-      PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-      PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+      PostUp = /usr/local/bin/wg-postup.sh
+      PostDown = /usr/local/bin/wg-postdown.sh
 
-      # Client configurations will be added here
-      # [Peer]
-      # PublicKey = CLIENT_PUBLIC_KEY
-      # AllowedIPs = 10.0.0.2/32
-
-  # WireGuard service configuration
-  - path: /etc/systemd/system/wireguard@wg0.service
-    permissions: '0644'
+  # Post-up script for routing
+  - path: /usr/local/bin/wg-postup.sh
+    permissions: '0755'
     owner: root:root
     content: |
-      [Unit]
-      Description=WireGuard VPN - wg0 interface
-      After=network.target
-      Wants=network-online.target
+      #!/bin/bash
+      
+      # Enable IP forwarding
+      echo 1 > /proc/sys/net/ipv4/ip_forward
+      
+      # Get the actual network interface name
+      DEFAULT_IFACE=$(ip route show default | awk '/default/ {print $5}' | head -1)
+      if [ -z "$DEFAULT_IFACE" ]; then
+          DEFAULT_IFACE="eth0"
+      fi
+      
+      # Basic NAT for WireGuard traffic
+      iptables -A FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
+      iptables -t nat -A POSTROUTING -o $DEFAULT_IFACE -j MASQUERADE 2>/dev/null || true
+      
+      echo "WireGuard Post-Up completed"
 
-      [Service]
-      Type=oneshot
-      RemainAfterExit=yes
-      ExecStart=/usr/bin/wg-quick up wg0
-      ExecStop=/usr/bin/wg-quick down wg0
-      TimeoutStartSec=30
-
-      [Install]
-      WantedBy=multi-user.target
+  # Post-down script for cleanup
+  - path: /usr/local/bin/wg-postdown.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/bin/bash
+      
+      # Remove forwarding rules
+      iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
+      iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || true
+      iptables -t nat -D POSTROUTING -o ens3 -j MASQUERADE 2>/dev/null || true
+      iptables -t nat -D POSTROUTING -o enp0s3 -j MASQUERADE 2>/dev/null || true
+      
+      echo "WireGuard Post-Down completed"
 
   # WireGuard management script
   - path: /usr/local/bin/wg-manage
@@ -72,35 +79,88 @@ write_files:
       
       # WireGuard Management Script
       
+      set -e
+      
       WG_DIR="/etc/wireguard"
       WG_CONF="$WG_DIR/wg0.conf"
       
       # Function to generate keys
       generate_keys() {
           echo "Generating WireGuard keys..."
+          
+          # Generate server keys
           wg genkey | tee $WG_DIR/server_private.key | wg pubkey > $WG_DIR/server_public.key
           chmod 600 $WG_DIR/server_private.key
           chmod 600 $WG_DIR/server_public.key
           
-          # Update server configuration with private key
+          # Update the configuration file with the private key
           SERVER_PRIVATE_KEY=$(cat $WG_DIR/server_private.key)
-          sed -i "s|SERVER_PRIVATE_KEY_PLACEHOLDER|$SERVER_PRIVATE_KEY|g" $WG_CONF
+          
+          # Create a clean configuration
+          cat > $WG_CONF << EOF
+      [Interface]
+      PrivateKey = $SERVER_PRIVATE_KEY
+      Address = 10.0.0.1/24
+      ListenPort = 51820
+      SaveConfig = true
+      PostUp = /usr/local/bin/wg-postup.sh
+      PostDown = /usr/local/bin/wg-postdown.sh
+      EOF
           
           echo "Server keys generated successfully!"
           echo "Server Public Key: $(cat $WG_DIR/server_public.key)"
       }
       
-      # Function to add client
+      # Function to add client with access mode
       add_client() {
           if [ -z "$1" ]; then
-              echo "Usage: $0 add-client <client_name>"
+              echo "Usage: $0 add-client <client_name> <access_mode>"
+              echo ""
+              echo "Access Modes:"
+              echo "  internet    - Full internet access through VPN server"
+              echo "  localhost   - Access to localhost (100.100.100.0/24) + private networks"
+              echo ""
+              echo "Examples:"
+              echo "  $0 add-client myclient internet"
+              echo "  $0 add-client myclient localhost"
               exit 1
           fi
           
           CLIENT_NAME=$1
-          CLIENT_IP="10.0.0.$((2 + $(grep -c "\[Peer\]" $WG_CONF)))"
+          ACCESS_MODE="${2:-internet}"
           
-          echo "Adding client: $CLIENT_NAME with IP: $CLIENT_IP"
+          # Calculate next available IP
+          NEXT_IP=2
+          while grep -q "10.0.0.$NEXT_IP" $WG_CONF; do
+              NEXT_IP=$((NEXT_IP + 1))
+          done
+          CLIENT_IP="10.0.0.$NEXT_IP"
+          
+          # Determine allowed IPs based on access mode
+          case "$ACCESS_MODE" in
+              "internet")
+                  # Full internet access - client can route all traffic through VPN
+                  ALLOWED_IPS="$CLIENT_IP/32"
+                  CLIENT_ALLOWED_IPS="0.0.0.0/0"
+                  echo "Adding client: $CLIENT_NAME with FULL INTERNET ACCESS"
+                  echo "Client will route all traffic through VPN server"
+                  ;;
+              "localhost")
+                  # Localhost + private networks access
+                  ALLOWED_IPS="$CLIENT_IP/32"
+                  CLIENT_ALLOWED_IPS="10.0.0.0/24,100.100.100.0/24,192.168.0.0/24,192.168.1.0/24"
+                  echo "Adding client: $CLIENT_NAME with LOCALHOST + PRIVATE NETWORK ACCESS"
+                  echo "Client can access localhost (100.100.100.0/24) and private networks"
+                  ;;
+              *)
+                  echo "Error: Invalid access mode '$ACCESS_MODE'"
+                  echo "Valid modes: internet, localhost"
+                  exit 1
+                  ;;
+          esac
+          
+          echo "Client IP: $CLIENT_IP"
+          echo "Access Mode: $ACCESS_MODE"
           
           # Generate client keys
           wg genkey | tee $WG_DIR/${CLIENT_NAME}_private.key | wg pubkey > $WG_DIR/${CLIENT_NAME}_public.key
@@ -115,9 +175,9 @@ write_files:
           cat >> $WG_CONF << EOF
       
       [Peer]
-      # $CLIENT_NAME
+      # $CLIENT_NAME ($ACCESS_MODE)
       PublicKey = $CLIENT_PUBLIC_KEY
-      AllowedIPs = $CLIENT_IP/32
+      AllowedIPs = $ALLOWED_IPS
       EOF
           
           # Create client configuration
@@ -130,16 +190,84 @@ write_files:
       [Peer]
       PublicKey = $SERVER_PUBLIC_KEY
       Endpoint = $(curl -s ifconfig.me):51820
-      AllowedIPs = 0.0.0.0/0
+      AllowedIPs = $CLIENT_ALLOWED_IPS
       PersistentKeepalive = 25
       EOF
           
           echo "Client $CLIENT_NAME added successfully!"
           echo "Client configuration saved to: $WG_DIR/${CLIENT_NAME}.conf"
-          echo "Client IP: $CLIENT_IP"
+          
+          # Display client configuration and instructions
+          echo ""
+          echo "=== Client Configuration for $CLIENT_NAME ==="
+          echo "Copy this configuration to your client device:"
+          echo ""
+          cat $WG_DIR/${CLIENT_NAME}.conf
+          echo ""
+          echo "=== End Configuration ==="
+          echo ""
+          echo "=== Connection Instructions ==="
+          echo ""
+          if [ "$ACCESS_MODE" = "internet" ]; then
+              echo "🌐 INTERNET MODE - Full internet access through VPN"
+              echo "1. Save the configuration above to a file (e.g., $CLIENT_NAME.conf)"
+              echo "2. Install WireGuard on your client device"
+              echo "3. Import the configuration file"
+              echo "4. Connect to the VPN"
+              echo "5. All internet traffic will now go through the VPN server"
+          else
+              echo "🏠 LOCALHOST MODE - Access to localhost and private networks"
+              echo "1. Save the configuration above to a file (e.g., $CLIENT_NAME.conf)"
+              echo "2. Install WireGuard on your client device"
+              echo "3. Import the configuration file"
+              echo "4. Connect to the VPN"
+              echo "5. You can now access:"
+              echo "   - Localhost server (100.100.100.0/24)"
+              echo "   - Private networks (192.168.0.0/24, 192.168.1.0/24)"
+              echo "   - VPN network (10.0.0.0/24)"
+              echo "6. Internet traffic will NOT go through VPN"
+          fi
+          echo ""
           
           # Reload WireGuard
-          wg syncconf wg0 <(wg-quick strip wg0)
+          if systemctl is-active --quiet wg-quick@wg0; then
+              echo "Reloading WireGuard configuration..."
+              wg syncconf wg0 <(wg-quick strip wg0) || systemctl restart wg-quick@wg0
+          else
+              echo "Starting WireGuard service..."
+              systemctl start wg-quick@wg0
+          fi
+      }
+      
+      # Function to show client configuration
+      show_client_config() {
+          if [ -z "$1" ]; then
+              echo "Usage: $0 show-client <client_name>"
+              echo ""
+              echo "Available clients:"
+              for conf in $WG_DIR/*.conf; do
+                  if [ -f "$conf" ] && [ "$(basename "$conf")" != "wg0.conf" ]; then
+                      CLIENT_NAME=$(basename "$conf" .conf)
+                      echo "  - $CLIENT_NAME"
+                  fi
+              done
+              exit 1
+          fi
+          
+          CLIENT_NAME=$1
+          CLIENT_CONF="$WG_DIR/${CLIENT_NAME}.conf"
+          
+          if [ ! -f "$CLIENT_CONF" ]; then
+              echo "Error: Client '$CLIENT_NAME' not found"
+              exit 1
+          fi
+          
+          echo "=== Client Configuration for $CLIENT_NAME ==="
+          echo "Copy this configuration to your client device:"
+          echo ""
+          cat "$CLIENT_CONF"
+          echo ""
+          echo "=== End Configuration ==="
       }
       
       # Function to remove client
@@ -164,20 +292,66 @@ write_files:
           echo "Client $CLIENT_NAME removed successfully!"
           
           # Reload WireGuard
-          wg syncconf wg0 <(wg-quick strip wg0)
+          if systemctl is-active --quiet wg-quick@wg0; then
+              wg syncconf wg0 <(wg-quick strip wg0) || systemctl restart wg-quick@wg0
+          fi
       }
       
       # Function to show status
       show_status() {
-          echo "WireGuard Status:"
-          wg show
+          echo "=== WireGuard Status ==="
           echo ""
-          echo "Active clients:"
-          grep -A 2 "\[Peer\]" $WG_CONF | grep -v "\[Peer\]" | grep -v "^$" | while read line; do
-              if [[ $line == *"PublicKey"* ]]; then
-                  echo "  - $line"
-              fi
-          done
+          echo "Active peers:"
+          wg show 2>/dev/null || echo "No active WireGuard interface"
+          echo ""
+          echo "Service status:"
+          systemctl status wg-quick@wg0 --no-pager -l
+      }
+      
+      # Function to restart service
+      restart_service() {
+          echo "Restarting WireGuard service..."
+          systemctl restart wg-quick@wg0
+          echo "WireGuard service restarted"
+      }
+      
+      # Function to fix configuration
+      fix_config() {
+          echo "Fixing WireGuard configuration..."
+          
+          # Backup current config
+          cp $WG_CONF $WG_CONF.backup.$(date +%Y%m%d_%H%M%S)
+          
+          # Check if private key exists
+          if [ ! -f $WG_DIR/server_private.key ]; then
+              echo "Generating new server keys..."
+              generate_keys
+              return
+          fi
+          
+          # Get the private key
+          SERVER_PRIVATE_KEY=$(cat $WG_DIR/server_private.key)
+          
+          # Create clean configuration
+          cat > $WG_CONF << EOF
+      [Interface]
+      PrivateKey = $SERVER_PRIVATE_KEY
+      Address = 10.0.0.1/24
+      ListenPort = 51820
+      SaveConfig = true
+      PostUp = /usr/local/bin/wg-postup.sh
+      PostDown = /usr/local/bin/wg-postdown.sh
+      EOF
+          
+          echo "Configuration cleaned. Testing..."
+          
+          # Test configuration
+          if wg-quick strip wg0 > /dev/null 2>&1; then
+              echo "Configuration is valid!"
+              restart_service
+          else
+              echo "Configuration is still invalid. Check the file manually."
+          fi
       }
       
       # Main script logic
@@ -186,7 +360,10 @@ write_files:
               generate_keys
               ;;
           "add-client")
-              add_client "$2"
+              add_client "$2" "$3"
+              ;;
+          "show-client")
+              show_client_config "$2"
               ;;
           "remove-client")
               remove_client "$2"
@@ -195,51 +372,64 @@ write_files:
               show_status
               ;;
           "restart")
-              systemctl restart wireguard@wg0
+              restart_service
+              ;;
+          "fix")
+              fix_config
+              ;;
+          "help"|"--help"|"-h")
+              echo "WireGuard Management Commands (wgm):"
+              echo ""
+              echo "Client Management:"
+              echo "  wgm add-client <name> <mode>    - Add a new client"
+              echo "    Modes: internet, localhost"
+              echo "  wgm show-client <name>         - Show client configuration"
+              echo "  wgm remove-client <name>       - Remove a client"
+              echo ""
+              echo "Service Management:"
+              echo "  wgm status                     - Show service status"
+              echo "  wgm restart                    - Restart WireGuard service"
+              echo ""
+              echo "Configuration:"
+              echo "  wgm init                       - Initialize with new keys"
+              echo "  wgm fix                        - Fix configuration issues"
+              echo "  wgm help                       - Show this help"
+              echo ""
+              echo "Examples:"
+              echo "  wgm add-client myclient internet"
+              echo "  wgm add-client myclient localhost"
+              echo "  wgm show-client myclient"
               ;;
           *)
-              echo "Usage: $0 {init|add-client <name>|remove-client <name>|status|restart}"
-              echo ""
-              echo "Commands:"
-              echo "  init              - Initialize WireGuard with new keys"
-              echo "  add-client <name> - Add a new client"
-              echo "  remove-client <name> - Remove a client"
-              echo "  status            - Show WireGuard status"
-              echo "  restart           - Restart WireGuard service"
+              echo "Usage: $0 {init|add-client <name> <mode>|show-client <name>|remove-client <name>|status|restart|fix|help}"
+              echo "Use '$0 help' for detailed information"
               exit 1
               ;;
       esac
 
-  # Firewall configuration script
-  - path: /usr/local/bin/setup-firewall
+  # Create wgm command alias
+  - path: /usr/local/bin/wgm
     permissions: '0755'
     owner: root:root
     content: |
       #!/bin/bash
       
-      # Setup firewall for WireGuard
+      # WireGuard Management Command Alias (wgm)
+      # This provides easy access to WireGuard management commands
       
-      # Enable IP forwarding
-      echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
-      sysctl -p
-      
-      # Configure UFW firewall
-      ufw --force reset
-      ufw default deny incoming
-      ufw default allow outgoing
-      
-      # Allow SSH (adjust port if needed)
-      ufw allow ssh
-      
-      # Allow WireGuard
-      ufw allow 51820/udp
-      
-      # Enable UFW
-      ufw --force enable
-      
-      echo "Firewall configured successfully!"
+      case "$1" in
+          "restart"|"start"|"stop"|"status"|"add-client"|"remove-client"|"show-client"|"fix"|"init"|"help")
+              /usr/local/bin/wg-manage "$@"
+              ;;
+          "show")
+              /usr/bin/wg show
+              ;;
+          *)
+              # Pass through to original wg command
+              /usr/bin/wg "$@"
+              ;;
+      esac
 
-# Run commands after package installation
 runcmd:
   # Enable IP forwarding
   - echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
@@ -249,31 +439,41 @@ runcmd:
   - mkdir -p /etc/wireguard
   - chmod 700 /etc/wireguard
   
-  # Generate WireGuard keys
+  # Generate WireGuard keys first
   - wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
   - chmod 600 /etc/wireguard/server_private.key
   - chmod 600 /etc/wireguard/server_public.key
   
   # Update server configuration with actual private key
   - SERVER_PRIVATE_KEY=$(cat /etc/wireguard/server_private.key)
-  - sed -i "s|SERVER_PRIVATE_KEY_PLACEHOLDER|$SERVER_PRIVATE_KEY|g" /etc/wireguard/wg0.conf
+  - sed -i "s|PrivateKey = .*|PrivateKey = $SERVER_PRIVATE_KEY|" /etc/wireguard/wg0.conf
   
-  # Setup firewall
-  - /usr/local/bin/setup-firewall
+  # Configure firewall
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow ssh
+  - ufw allow 51820/udp
+  - ufw --force enable
   
   # Enable and start WireGuard service
-  - systemctl daemon-reload
-  - systemctl enable wireguard@wg0
-  - systemctl start wireguard@wg0
+  - systemctl enable wg-quick@wg0
+  - systemctl start wg-quick@wg0
   
   # Display server information
   - echo "=== WireGuard Server Setup Complete ==="
   - echo "Server Public Key: $(cat /etc/wireguard/server_public.key)"
   - echo "WireGuard Port: 51820"
-  - echo "Management Script: /usr/local/bin/wg-manage"
+  - echo "Management Command: wgm"
   - echo ""
-  - echo "To add a client, run: /usr/local/bin/wg-manage add-client <client_name>"
-  - echo "To view status, run: /usr/local/bin/wg-manage status"
+  - echo "Access Modes:"
+  - echo "  internet  - Full internet access through VPN"
+  - echo "  localhost - Access to localhost (100.100.100.0/24) + private networks"
+  - echo ""
+  - echo "Examples:"
+  - echo "  wgm add-client myclient internet"
+  - echo "  wgm add-client myclient localhost"
+  - echo "  wgm show-client myclient"
+  - echo "  wgm help"
 
-# Final message
-final_message: "WireGuard VPN server setup complete! Check the logs for server public key and management instructions." 
+final_message: "WireGuard VPN server setup complete! Use 'wgm help' to see all available commands." 
