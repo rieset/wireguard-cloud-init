@@ -1,95 +1,63 @@
-# Advanced WireGuard VPN Server with wgm Command Tool
+# Simple WireGuard VPN Server with wgm Command Tool
 
-This advanced cloud-init configuration provides granular control over IP routing and allows you to selectively allow or disallow specific IP ranges when using multiple WireGuard VPNs. It includes a convenient `wgm` command tool for easy management.
+This cloud-init configuration provides a simple WireGuard VPN server with two access modes and an easy-to-use `wgm` command tool for management.
 
 ## Key Features
 
-### 🔧 **Advanced IP Range Control**
-- **Selective Routing**: Control which IP ranges are allowed through the VPN
-- **Dynamic Blocking**: Block/unblock specific IP ranges on-the-fly
-- **Multiple VPN Support**: Handle multiple VPN networks without conflicts
-- **Custom Routing Tables**: Advanced routing with policy-based routing
-
-### 🛡️ **Enhanced Security**
-- **Granular Firewall Rules**: Fine-grained control over traffic
-- **IP Range Filtering**: Block specific subnets or IP ranges
-- **Custom iptables Chains**: Dedicated chains for VPN traffic management
+### 🌐 **Two Access Modes**
+- **Internet Mode**: Full internet access through VPN server
+- **Localhost Mode**: Access to localhost (100.100.100.0/24) + private networks
+- **Simple Selection**: Choose mode when adding clients
 
 ### 🚀 **Easy Management with wgm Command**
-- **Simple Commands**: Use `wgm` instead of long management script paths
-- **Multiple Access Types**: Configure clients with different access levels
+- **Simple Commands**: Use `wgm` for all management tasks
+- **Automatic Configuration Display**: See client config immediately after creation
 - **Built-in Help**: Comprehensive help system with `wgm help`
+
+### 🛡️ **Security & Reliability**
+- **Automatic Key Generation**: Secure keys generated automatically
+- **Firewall Configuration**: UFW firewall with WireGuard port open
+- **Service Management**: Easy start, stop, and restart commands
 
 ## Usage Examples
 
-### 1. Add Client with Different Access Types
+### 1. Add Client with Access Modes
 
-#### Full Internet Access (Default)
+#### Internet Mode (Full Internet Access)
 ```bash
 # Client routes ALL internet traffic through VPN server
 wgm add-client myclient internet
 ```
 
-#### Private Network Only
+#### Localhost Mode (Localhost + Private Networks)
 ```bash
-# Client can only access VPN and private networks
-wgm add-client myclient private
+# Client can access localhost (100.100.100.0/24) + private networks
+wgm add-client myclient localhost
 ```
 
-#### Custom IP Ranges
-```bash
-# Client can access only specific IP ranges
-wgm add-client myclient custom '10.0.0.3/32,192.168.0.0/24,100.100.100.0/24'
-```
-
-### 2. Service Management
+### 2. Client Management
 
 ```bash
-# Restart WireGuard service
-wgm restart
-
-# Start WireGuard service
-wgm start
-
-# Stop WireGuard service
-wgm stop
-
-# Check service status
-wgm status
-```
-
-### 3. Network Management
-
-```bash
-# Block a specific IP range
-wgm block-ip-range '192.168.1.0/24'
-
-# Unblock a previously blocked IP range
-wgm unblock-ip-range '192.168.1.0/24'
-
-# Show routing status
-wgm routing
-```
-
-### 4. Client Management
-
-```bash
-# Update client's allowed IP ranges
-wgm update-client-ips myclient '10.0.0.3/32,192.168.0.0/24'
+# Show client configuration (displays full config for copying)
+wgm show-client myclient
 
 # Remove a client
 wgm remove-client myclient
-
-# Show client configuration
-wgm show-client myclient
 ```
 
-### 5. Configuration and Troubleshooting
+### 3. Service Management
 
 ```bash
-# Initialize with new keys
-wgm init
+# Check service status
+wgm status
 
+# Restart WireGuard service
+wgm restart
+```
+
+### 4. Configuration and Help
+
+```bash
 # Fix configuration issues
 wgm fix
 
@@ -97,37 +65,30 @@ wgm fix
 wgm help
 ```
 
-## Access Types
+## Access Modes
 
 ### Client Access Configuration
 
-The system supports three different access types for clients:
+The system supports two access modes for clients:
 
-| Access Type | Internet Access | Private Networks | Custom IPs | Use Case |
-|-------------|----------------|------------------|------------|----------|
-| `internet` | ✅ Full | ✅ All | ✅ All | Remote workers, general VPN |
-| `private` | ❌ None | ✅ VPN + Private | ❌ None | Internal servers, secure access |
-| `custom` | ❌ None | ❌ None | ✅ Specified | Fine-grained control |
+| Access Mode | Internet Access | Localhost (100.100.100.0/24) | Private Networks | Use Case |
+|-------------|----------------|------------------------------|------------------|----------|
+| `internet` | ✅ Full | ✅ Yes | ✅ Yes | Remote workers, general VPN |
+| `localhost` | ❌ None | ✅ Yes | ✅ Yes | Access localhost server + private networks |
 
-### Access Type Details
+### Access Mode Details
 
-#### **Full Internet Access (`internet`)**
-- **Command**: `wg add-client myclient internet`
+#### **🌐 Internet Mode (`internet`)**
+- **Command**: `wgm add-client myclient internet`
 - **What it does**: Client routes ALL internet traffic through the VPN server
 - **Client config**: `AllowedIPs = 0.0.0.0/0`
-- **Use case**: Remote workers who want to browse the web through the VPN
+- **Use case**: When you want to browse the web through the VPN server
 
-#### **Private Network Only (`private`)**
-- **Command**: `wg add-client myclient private`
-- **What it does**: Client can only access VPN network and private networks
-- **Client config**: `AllowedIPs = 10.0.0.0/24,192.168.0.0/24,192.168.1.0/24,100.100.100.0/24`
-- **Use case**: Internal servers that only need access to company resources
-
-#### **Custom IP Ranges (`custom`)**
-- **Command**: `wg add-client myclient custom '10.0.0.3/32,192.168.0.0/24,100.100.100.0/24'`
-- **What it does**: Client can access only specific IP ranges
-- **Client config**: `AllowedIPs = 10.0.0.3/32,192.168.0.0/24,100.100.100.0/24`
-- **Use case**: Fine-grained control over what the client can access
+#### **🏠 Localhost Mode (`localhost`)**
+- **Command**: `wgm add-client myclient localhost`
+- **What it does**: Client can access localhost (100.100.100.0/24) + private networks
+- **Client config**: `AllowedIPs = 10.0.0.0/24,100.100.100.0/24,192.168.0.0/24,192.168.1.0/24`
+- **Use case**: When you want to access localhost server and private networks, but NOT route internet through VPN
 
 ## Management Commands
 
@@ -135,51 +96,59 @@ The system supports three different access types for clients:
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `add-client <name> [access_type] [ips]` | Add client with access type | `add-client myclient internet` |
-| `update-client-ips <name> <new_ips>` | Update client's allowed IPs | `update-client-ips myclient '10.0.0.3/32,192.168.0.0/24'` |
-| `block-ip-range <range>` | Block specific IP range | `block-ip-range '192.168.1.0/24'` |
-| `unblock-ip-range <range>` | Unblock specific IP range | `unblock-ip-range '192.168.1.0/24'` |
-| `remove-client <name>` | Remove a client | `remove-client myclient` |
-| `routing` | Show routing status | `routing` |
+| `add-client <name> <mode>` | Add client with access mode | `add-client myclient internet` |
 | `show-client <name>` | Show client configuration | `show-client myclient` |
-| `restart` | Restart WireGuard service | `restart` |
-| `start` | Start WireGuard service | `start` |
-| `stop` | Stop WireGuard service | `stop` |
+| `remove-client <name>` | Remove a client | `remove-client myclient` |
 | `status` | Show service status | `status` |
+| `restart` | Restart WireGuard service | `restart` |
 | `fix` | Fix configuration issues | `fix` |
-| `init` | Initialize with new keys | `init` |
 | `help` | Show help | `help` |
 
-## Advanced Configuration
+## Client Configuration Display
 
-### Custom Routing Table
+When you add a client, the system automatically displays:
 
-The configuration creates a custom routing table (`vpn`) with ID 200:
+1. **Complete client configuration file** - Ready to copy and paste
+2. **Step-by-step connection instructions** - Clear guidance for setup
+3. **Mode-specific instructions** - Different instructions for internet vs localhost mode
 
-```bash
-# View custom routing table
-ip route show table vpn
+### Example Output for Internet Mode:
+```
+=== Client Configuration for myclient ===
+[Interface]
+PrivateKey = <client_private_key>
+Address = 10.0.0.2/24
+DNS = 8.8.8.8, 8.8.4.4
 
-# View routing rules
-ip rule show
+[Peer]
+PublicKey = <server_public_key>
+Endpoint = <server_ip>:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+=== End Configuration ===
+
+=== Connection Instructions ===
+🌐 INTERNET MODE - Full internet access through VPN
+1. Save the configuration above to a file (e.g., myclient.conf)
+2. Install WireGuard on your client device
+3. Import the configuration file
+4. Connect to the VPN
+5. All internet traffic will now go through the VPN server
 ```
 
-### Packet Marking
-
-Traffic from specific IP ranges is marked for custom routing:
-
-- Mark 1: `10.0.0.0/24`
-- Mark 2: `192.168.0.0/24`  
-- Mark 3: `192.168.1.0/24`
-- Mark 4: `192.168.5.0/24`
-
-### iptables Chains
-
-Custom chains are created for VPN traffic management:
-
-- `VPN_INPUT` - Input traffic from WireGuard
-- `VPN_FORWARD` - Forwarded traffic through WireGuard
-- `VPN_OUTPUT` - Output traffic to WireGuard
+### Example Output for Localhost Mode:
+```
+🏠 LOCALHOST MODE - Access to localhost and private networks
+1. Save the configuration above to a file (e.g., myclient.conf)
+2. Install WireGuard on your client device
+3. Import the configuration file
+4. Connect to the VPN
+5. You can now access:
+   - Localhost server (100.100.100.0/24)
+   - Private networks (192.168.0.0/24, 192.168.1.0/24)
+   - VPN network (10.0.0.0/24)
+6. Internet traffic will NOT go through VPN
+```
 
 ## Use Cases
 
@@ -189,59 +158,38 @@ Custom chains are created for VPN traffic management:
 # Employee with full internet access through VPN
 wgm add-client employee1 internet
 
-# Employee with private network access only
-wgm add-client employee2 private
+# Employee with localhost + private network access only
+wgm add-client employee2 localhost
 ```
 
 ### 2. Server Access Control
 
 ```bash
-# Database server - private network only
-wgm add-client db-server private
+# Database server - localhost + private networks only
+wgm add-client db-server localhost
 
-# Web server - custom access to specific networks
-wgm add-client web-server custom '10.0.0.0/24,192.168.1.0/24'
-
-# Admin server - full access
+# Admin server - full internet access
 wgm add-client admin-server internet
 ```
 
-### 3. Multi-Network VPN
-
-When you have multiple networks that need different access levels:
+### 3. Development Environment
 
 ```bash
-# Allow access to network A
-wgm add-client clientA custom '192.168.0.0/24'
+# Developer needs access to localhost server
+wgm add-client developer localhost
 
-# Allow access to network B  
-wgm add-client clientB custom '192.168.1.0/24'
-
-# Block access to network C
-wgm block-ip-range '192.168.5.0/24'
+# QA tester needs full internet access
+wgm add-client qa-tester internet
 ```
 
-### 4. Temporary Access Control
+### 4. Production vs Development
 
 ```bash
-# Temporarily block a network
-wgm block-ip-range '192.168.1.0/24'
+# Production server - localhost access only
+wgm add-client prod-server localhost
 
-# Later, unblock it
-wgm unblock-ip-range '192.168.1.0/24'
-```
-
-### 5. Client-Specific Routing
-
-```bash
-# Client 1: Access to development network only
-wgm add-client dev1 custom '192.168.0.0/24'
-
-# Client 2: Access to production network only
-wgm add-client prod1 custom '192.168.1.0/24'
-
-# Client 3: Access to both networks
-wgm add-client admin custom '192.168.0.0/24,192.168.1.0/24'
+# Development server - full access for testing
+wgm add-client dev-server internet
 ```
 
 ## Troubleshooting
@@ -307,26 +255,6 @@ ping 10.0.0.1
 - iptables rules are processed in order (most specific first)
 - Consider using `ipset` for large IP range lists
 
-## Migration from Basic Configuration
-
-If you're upgrading from the basic WireGuard configuration:
-
-1. **Backup your current config**:
-   ```bash
-   sudo cp /etc/wireguard/wg0.conf /etc/wireguard/wg0.conf.backup
-   ```
-
-2. **Use the new wgm command**:
-   ```bash
-   wgm help
-   ```
-
-3. **Migrate existing clients**:
-   ```bash
-   # For each existing client, update with specific access type
-   wgm update-client-ips <client_name> <allowed_ips>
-   ```
-
 ## Quick Start Guide
 
 1. **Deploy the cloud-init configuration**
@@ -338,16 +266,18 @@ If you're upgrading from the basic WireGuard configuration:
 
 3. **Add your first client**:
    ```bash
-   # For full internet access
+   # For full internet access through VPN
    wgm add-client myclient internet
    
-   # For private network only
-   wgm add-client myclient private
+   # For localhost + private network access
+   wgm add-client myclient localhost
    ```
 
-4. **Get help anytime**:
+4. **Copy the displayed configuration to your client device**
+5. **Connect using WireGuard client**
+6. **Get help anytime**:
    ```bash
    wgm help
    ```
 
-This advanced configuration provides the flexibility you need for complex networking scenarios while maintaining security and performance. The `wgm` command tool makes management simple and intuitive. 
+This simple configuration provides two access modes for different use cases while maintaining security and ease of use. The `wgm` command tool makes management straightforward and intuitive. 
